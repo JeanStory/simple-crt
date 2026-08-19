@@ -95,6 +95,7 @@ class TerminalWidget(QAbstractScrollArea):
         self.stream = pyte.ByteStream(self.screen)
 
         self._scroll_offset = 0  # 向上回滚的行数
+        self._wheel_accum = 0.0  # 滚轮 delta 累积余数, 用于平滑滚动
         self._blink = True
         # 选区: 锚定绝对行号 (history 段 + 当前屏幕段的连续坐标)
         self._sel_anchor = None   # (abs_line, col) 起点
@@ -162,6 +163,7 @@ class TerminalWidget(QAbstractScrollArea):
         bar.blockSignals(True)
         bar.setRange(0, hist)
         bar.setPageStep(self.rows)
+        bar.setSingleStep(1)
         bar.setValue(hist - self._scroll_offset)
         bar.blockSignals(False)
 
@@ -515,12 +517,25 @@ class TerminalWidget(QAbstractScrollArea):
 
     # ---------- 滚轮 ----------
     def wheelEvent(self, event) -> None:
-        delta = event.angleDelta().y()
-        lines = 3 if delta > 0 else -3
         hist = len(self.screen.history.top)
-        self._scroll_offset = max(0, min(hist, self._scroll_offset + lines))
-        self._update_scrollbar()
-        self.viewport().update()
+        # 优先用 pixelDelta (触控板/高精度设备), 回退到 angleDelta (普通滚轮)
+        pixel = event.pixelDelta().y()
+        if pixel != 0:
+            # 像素级: 按字符行高换算, 累积不足一行的余数
+            self._wheel_accum += pixel / self._char_h
+        else:
+            # 角度级: 标准滚轮一格 120 单位, 映射为 3 行, 按实际 delta 比例累积
+            angle = event.angleDelta().y()
+            self._wheel_accum += angle / 120.0 * 3.0
+        # 取累积的整数行部分, 保留小数余数给下次事件 (平滑)
+        lines = int(self._wheel_accum)
+        if lines != 0:
+            self._wheel_accum -= lines
+            # 向上滚(delta正)增大 offset, 向下滚减小
+            self._scroll_offset = max(0, min(hist, self._scroll_offset + lines))
+            self._update_scrollbar()
+            self.viewport().update()
+        event.accept()
 
     def clear_scrollback(self) -> None:
         self.screen.history.top.clear()
