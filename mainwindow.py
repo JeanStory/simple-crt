@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QTabWidget,
                                QDockWidget, QTreeWidget, QTreeWidgetItem, QMenu,
-                               QMessageBox, QInputDialog, QToolBar, QLabel,
+                               QMessageBox, QToolBar,
                                QApplication)
 
 from .sessions import SessionStore, Session

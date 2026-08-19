@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from typing import List, Optional
 
 from . import crypto
@@ -61,16 +61,6 @@ class SessionStore:
         # 首次运行 / 旧数据: 若磁盘存在明文密码则静默加密迁移
         if self._key is not None and self.has_plaintext_passwords():
             self.save()
-
-    # ---- 密钥管理 ----
-    def set_key(self, key: Optional[bytes]) -> None:
-        """设置数据密钥。设置后重新加载以解密现有密码。"""
-        self._key = key
-        self.load()
-
-    @property
-    def unlocked(self) -> bool:
-        return self._key is not None
 
     # ---- 磁盘 IO (透明加解密) ----
     def load(self) -> None:

@@ -6,7 +6,7 @@ import unicodedata
 import pyte
 from PySide6.QtCore import Qt, QTimer, Signal, QRect
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QKeyEvent,
-                           QTextOption, QGuiApplication, QAction)
+                           QGuiApplication, QAction)
 from PySide6.QtWidgets import QWidget, QAbstractScrollArea, QMenu
 
 # xterm 256 -> RGB 基础 16 色 + 命名色
