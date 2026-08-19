@@ -1,6 +1,8 @@
 """终端控件: pyte 屏幕缓冲 + QPainter 渲染 + 键盘输入映射为 ANSI 序列。"""
 from __future__ import annotations
 
+import unicodedata
+
 import pyte
 from PySide6.QtCore import Qt, QTimer, Signal, QRect
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QKeyEvent,
@@ -41,6 +43,13 @@ def _xterm256_to_hex(n: int) -> str:
     # 灰阶
     v = 8 + (n - 232) * 10
     return "#%02x%02x%02x" % (v, v, v)
+
+
+def _is_wide_char(ch: str) -> bool:
+    """判断是否为东亚全角字符 (占 2 个终端列宽)。"""
+    if not ch:
+        return False
+    return unicodedata.east_asian_width(ch[0]) in ("W", "F")
 
 
 def resolve_color(spec: str, default: str) -> QColor:
@@ -225,7 +234,10 @@ class TerminalWidget(QAbstractScrollArea):
             if char.reverse:
                 fg, bg = bg, fg
             x = col * self._char_w
-            rect = QRect(int(x), int(y), int(self._char_w) + 1, int(self._char_h) + 1)
+            # 全角字符 (中文/日文/韩文等) 占 2 列宽, 绘制矩形需加倍, 否则字形右半被裁剪
+            cell_span = 2 if _is_wide_char(data) else 1
+            cell_w = self._char_w * cell_span
+            rect = QRect(int(x), int(y), int(cell_w) + 1, int(self._char_h) + 1)
             if bg != QColor(DEFAULT_BG):
                 painter.fillRect(rect, bg)
             if data != " ":
