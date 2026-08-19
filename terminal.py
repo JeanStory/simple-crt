@@ -105,7 +105,20 @@ class TerminalWidget(QAbstractScrollArea):
         self._blink_timer.start(500)
 
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
-        self.setStyleSheet("QAbstractScrollArea{background:%s;}" % DEFAULT_BG)
+        # 垂直滚动条常显, 水平不需要
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 深色主题滚动条样式 (默认样式在深色终端背景上几乎不可见)
+        self.setStyleSheet(
+            "QAbstractScrollArea{background:%s;}"
+            "QScrollBar:vertical{background:#2b2b2b;width:14px;margin:0;}"
+            "QScrollBar::handle:vertical{background:#5a5a5a;min-height:24px;"
+            "border-radius:4px;margin:2px;}"
+            "QScrollBar::handle:vertical:hover{background:#787878;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:none;}"
+            % DEFAULT_BG
+        )
 
     # ---------- 数据流 ----------
     def feed(self, data: bytes) -> None:
