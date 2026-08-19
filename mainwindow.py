@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QTabWidget,
                                QDockWidget, QTreeWidget, QTreeWidgetItem, QMenu,
-                               QMessageBox, QInputDialog, QToolBar, QLabel)
+                               QMessageBox, QInputDialog, QToolBar, QLabel,
+                               QApplication)
 
 from .sessions import SessionStore, Session
 from .dialogs import SessionDialog
@@ -102,6 +103,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Simple CRT - 简易终端工具")
         self.resize(1000, 680)
+        self._center_on_primary_screen()
         self.store = SessionStore()
 
         self.tabs = QTabWidget()
@@ -114,6 +116,19 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_menu()
         self.statusBar().showMessage("就绪")
+
+    def _center_on_primary_screen(self) -> None:
+        """确保窗口以正常状态显示并居中到主屏, 防止继承屏幕外/最小化状态导致看不到界面。"""
+        self.setWindowState(Qt.WindowNoState)
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        frame = self.frameGeometry()
+        frame.moveCenter(avail.center())
+        x = max(avail.left(), frame.left())
+        y = max(avail.top(), frame.top())
+        self.move(x, y)
 
     # ---------- 会话侧栏 ----------
     def _build_session_dock(self) -> None:
