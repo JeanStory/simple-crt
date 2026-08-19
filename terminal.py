@@ -4,8 +4,8 @@ from __future__ import annotations
 import pyte
 from PySide6.QtCore import Qt, QTimer, Signal, QRect
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QKeyEvent,
-                           QTextOption, QGuiApplication)
-from PySide6.QtWidgets import QWidget, QAbstractScrollArea
+                           QTextOption, QGuiApplication, QAction)
+from PySide6.QtWidgets import QWidget, QAbstractScrollArea, QMenu
 
 # xterm 256 -> RGB 基础 16 色 + 命名色
 NAMED_COLORS = {
@@ -20,6 +20,7 @@ NAMED_COLORS = {
 
 DEFAULT_FG = "#d3d7cf"
 DEFAULT_BG = "#1e1e1e"
+SELECTION_BG = "#264f78"  # 选区高亮 (VS Code 风格蓝)
 
 
 def _xterm256_to_hex(n: int) -> str:
@@ -86,6 +87,10 @@ class TerminalWidget(QAbstractScrollArea):
 
         self._scroll_offset = 0  # 向上回滚的行数
         self._blink = True
+        # 选区: 锚定绝对行号 (history 段 + 当前屏幕段的连续坐标)
+        self._sel_anchor = None   # (abs_line, col) 起点
+        self._sel_end = None      # (abs_line, col) 终点
+        self._selecting = False
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._toggle_blink)
         self._blink_timer.start(500)
@@ -99,8 +104,9 @@ class TerminalWidget(QAbstractScrollArea):
             self.stream.feed(data)
         except Exception:
             pass
-        # 有新输出时跳回底部
+        # 有新输出时跳回底部, 清除选区(绝对行锚会随历史滚动失效)
         self._scroll_offset = 0
+        self._clear_selection()
         self._update_scrollbar()
         self.viewport().update()
 
@@ -150,19 +156,28 @@ class TerminalWidget(QAbstractScrollArea):
 
         buf = self.screen.buffer
         hist_top = list(self.screen.history.top)
+        hist_len = len(hist_top)
+
+        # 归一化选区 (abs_line, col) start<=end
+        sel = self._normalized_selection()
 
         # 组合"历史 + 当前屏幕"的可视区
         for row in range(self.rows):
             src_index = row - self._scroll_offset
+            # 该行在"历史+屏幕"连续坐标中的绝对行号
+            abs_line = hist_len + src_index
+            sel_range = self._row_selection_range(abs_line, sel)
             if src_index < 0:
                 # 显示历史行
                 h_idx = len(hist_top) + src_index
                 if 0 <= h_idx < len(hist_top):
                     line = hist_top[h_idx]
-                    self._draw_line(painter, row, line, is_history=True)
+                    self._draw_line(painter, row, line, is_history=True,
+                                    sel_range=sel_range)
             else:
                 line = buf[src_index]
-                self._draw_line(painter, row, line, is_history=False)
+                self._draw_line(painter, row, line, is_history=False,
+                                sel_range=sel_range)
 
         # 光标 (仅在未回滚且闪烁开时)
         if self._scroll_offset == 0 and self._blink and self.hasFocus():
@@ -185,14 +200,25 @@ class TerminalWidget(QAbstractScrollArea):
                 except Exception:
                     pass
 
-    def _draw_line(self, painter: QPainter, row: int, line, is_history: bool) -> None:
+    def _draw_line(self, painter: QPainter, row: int, line, is_history: bool,
+                   sel_range=None) -> None:
         y = row * self._char_h
+        # 选区背景先整体铺一层 (含行尾空白, 视觉更接近真实终端)
+        if sel_range is not None:
+            s_col, e_col = sel_range  # [s_col, e_col) 半开
+            if e_col > s_col:
+                x0 = s_col * self._char_w
+                w = (e_col - s_col) * self._char_w
+                painter.fillRect(QRect(int(x0), int(y), int(w) + 1,
+                                       int(self._char_h) + 1),
+                                 QColor(SELECTION_BG))
         # line 是 dict-like: 列 -> Char
         max_col = self.cols
         for col in range(max_col):
             char = line[col]
             data = char.data or " "
-            if data == " " and char.bg == "default" and not char.reverse:
+            in_sel = sel_range is not None and sel_range[0] <= col < sel_range[1]
+            if data == " " and char.bg == "default" and not char.reverse and not in_sel:
                 continue
             fg = resolve_color(char.fg, DEFAULT_FG)
             bg = resolve_color(char.bg, DEFAULT_BG)
@@ -214,6 +240,186 @@ class TerminalWidget(QAbstractScrollArea):
                 painter.setPen(fg)
                 painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, data)
 
+    # ---------- 选区 ----------
+    def _clear_selection(self) -> None:
+        self._sel_anchor = None
+        self._sel_end = None
+        self._selecting = False
+
+    def _has_selection(self) -> bool:
+        return self._sel_anchor is not None and self._sel_end is not None \
+            and self._sel_anchor != self._sel_end
+
+    def _normalized_selection(self):
+        """返回 (start, end) 且 start<=end, 元素为 (abs_line, col)。无选区返回 None。"""
+        if not self._has_selection():
+            return None
+        a, b = self._sel_anchor, self._sel_end
+        if (a[0], a[1]) <= (b[0], b[1]):
+            return a, b
+        return b, a
+
+    def _row_selection_range(self, abs_line: int, sel):
+        """给定行的绝对行号, 返回该行被选中的列区间 [s_col, e_col) 或 None。"""
+        if sel is None:
+            return None
+        (sl, sc), (el, ec) = sel
+        if abs_line < sl or abs_line > el:
+            return None
+        s_col = sc if abs_line == sl else 0
+        e_col = ec if abs_line == el else self.cols
+        if e_col < s_col:
+            return None
+        return (s_col, e_col)
+
+    def _pixel_to_cell(self, pos):
+        """视口像素坐标 -> (abs_line, col), 做边界钳制。"""
+        col = int(pos.x() / self._char_w)
+        col = max(0, min(self.cols, col))
+        row = int(pos.y() / self._char_h)
+        row = max(0, min(self.rows - 1, row))
+        hist_len = len(self.screen.history.top)
+        abs_line = hist_len + (row - self._scroll_offset)
+        return (abs_line, col)
+
+    def _line_at_abs(self, abs_line: int):
+        """按绝对行号取行对象 (历史段或当前屏幕段)。越界返回 None。"""
+        hist_top = list(self.screen.history.top)
+        hist_len = len(hist_top)
+        src_index = abs_line - hist_len
+        if src_index < 0:
+            h_idx = hist_len + src_index
+            if 0 <= h_idx < hist_len:
+                return hist_top[h_idx]
+            return None
+        if 0 <= src_index < self.rows:
+            return self.screen.buffer[src_index]
+        return None
+
+    def get_selected_text(self) -> str:
+        sel = self._normalized_selection()
+        if sel is None:
+            return ""
+        (sl, sc), (el, ec) = sel
+        parts = []
+        for abs_line in range(sl, el + 1):
+            line = self._line_at_abs(abs_line)
+            if line is None:
+                parts.append("")
+                continue
+            s_col = sc if abs_line == sl else 0
+            e_col = ec if abs_line == el else self.cols
+            chars = [(line[c].data or " ") for c in range(s_col, min(e_col, self.cols))]
+            parts.append("".join(chars).rstrip())
+        return "\n".join(parts)
+
+    # ---------- 鼠标 (选择/粘贴) ----------
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._sel_anchor = self._pixel_to_cell(event.position().toPoint())
+            self._sel_end = self._sel_anchor
+            self._selecting = True
+            self.viewport().update()
+        elif event.button() == Qt.MiddleButton:
+            # X11 风格中键粘贴 (选区优先, 否则剪贴板)
+            sel = self.get_selected_text()
+            if sel:
+                self._send_paste(sel)
+            else:
+                self.paste_clipboard()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._selecting:
+            self._sel_end = self._pixel_to_cell(event.position().toPoint())
+            self.viewport().update()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._selecting:
+            self._sel_end = self._pixel_to_cell(event.position().toPoint())
+            self._selecting = False
+            # 选中即自动复制到剪贴板 (可选行为, 与多数终端一致)
+            if self._has_selection():
+                txt = self.get_selected_text()
+                if txt:
+                    QGuiApplication.clipboard().setText(txt)
+            self.viewport().update()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        # 双击选中光标下的单词
+        if event.button() == Qt.LeftButton:
+            abs_line, col = self._pixel_to_cell(event.position().toPoint())
+            line = self._line_at_abs(abs_line)
+            if line is not None:
+                def is_word(c):
+                    return c.isalnum() or c in "_-./"
+                start = col
+                while start > 0 and is_word(line[start - 1].data or " "):
+                    start -= 1
+                end = col
+                while end < self.cols and is_word(line[end].data or " "):
+                    end += 1
+                if end > start:
+                    self._sel_anchor = (abs_line, start)
+                    self._sel_end = (abs_line, end)
+                    txt = self.get_selected_text()
+                    if txt:
+                        QGuiApplication.clipboard().setText(txt)
+                    self.viewport().update()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event) -> None:
+        menu = QMenu(self)
+        act_copy = QAction("复制", self)
+        act_copy.setEnabled(self._has_selection())
+        act_copy.triggered.connect(self.copy_selection)
+        act_paste = QAction("粘贴", self)
+        act_paste.setEnabled(bool(QGuiApplication.clipboard().text()))
+        act_paste.triggered.connect(self.paste_clipboard)
+        act_selall = QAction("全选", self)
+        act_selall.triggered.connect(self.select_all)
+        menu.addAction(act_copy)
+        menu.addAction(act_paste)
+        menu.addSeparator()
+        menu.addAction(act_selall)
+        menu.exec(event.globalPos())
+
+    def select_all(self) -> None:
+        hist_len = len(self.screen.history.top)
+        self._sel_anchor = (0, 0)
+        self._sel_end = (hist_len + self.rows - 1, self.cols)
+        self.viewport().update()
+
+    # ---------- 复制 / 粘贴 ----------
+    def copy_selection(self) -> None:
+        txt = self.get_selected_text()
+        if txt:
+            QGuiApplication.clipboard().setText(txt)
+
+    def paste_clipboard(self) -> None:
+        txt = QGuiApplication.clipboard().text()
+        if txt:
+            self._send_paste(txt)
+
+    def _send_paste(self, text: str) -> None:
+        """粘贴文本到终端: 规范化换行 + 支持 bracketed paste mode。"""
+        # 统一换行为 \r (终端换行), 先折叠 \r\n 再单独 \n
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
+        data = text.encode("utf-8")
+        # pyte 记录了应用是否开启 bracketed paste (DECSET 2004)
+        bracketed = bool(getattr(self.screen, "mode", set()) and
+                         2004 in self.screen.mode)
+        if bracketed:
+            data = b"\x1b[200~" + data + b"\x1b[201~"
+        self._scroll_offset = 0
+        self.send_data.emit(data)
+
     # ---------- 键盘输入 ----------
     def event(self, event) -> bool:
         # Qt 默认会把 Tab/Backtab 当作焦点切换在 keyPressEvent 之前拦截,
@@ -228,6 +434,22 @@ class TerminalWidget(QAbstractScrollArea):
         key = event.key()
         mod = event.modifiers()
         text = event.text()
+
+        # 复制/粘贴快捷键 (终端里 Ctrl+C 是 SIGINT, 故复制用 Ctrl+Shift+C)
+        ctrl = mod & Qt.ControlModifier
+        shift = mod & Qt.ShiftModifier
+        if ctrl and shift and key == Qt.Key_C:
+            self.copy_selection()
+            event.accept()
+            return
+        if ctrl and shift and key == Qt.Key_V:
+            self.paste_clipboard()
+            event.accept()
+            return
+        if shift and key == Qt.Key_Insert:
+            self.paste_clipboard()
+            event.accept()
+            return
 
         seq = self._map_key(key, mod, text)
         if seq is not None:
