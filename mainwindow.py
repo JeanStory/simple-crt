@@ -203,6 +203,14 @@ class MainWindow(QMainWindow):
     def _close_tab(self, index: int) -> None:
         tab = self.tabs.widget(index)
         if isinstance(tab, TerminalTab):
+            # 关闭仍在连接中的会话前确认,避免误点标签页 × 断开活动连接
+            if tab.is_alive:
+                name = self.tabs.tabText(index)
+                if QMessageBox.question(
+                    self, "关闭会话",
+                    f"会话 '{name}' 仍在连接中,确定关闭?"
+                ) != QMessageBox.Yes:
+                    return
             tab.close_backend()
         self.tabs.removeTab(index)
 
@@ -247,6 +255,18 @@ class MainWindow(QMainWindow):
             tab.term.feed(b"\x1b[2J\x1b[H")
 
     def closeEvent(self, event) -> None:
+        # 若仍有活动连接,关闭主窗口前确认,避免误关丢失所有会话
+        active = sum(
+            1 for i in range(self.tabs.count())
+            if isinstance(self.tabs.widget(i), TerminalTab)
+            and self.tabs.widget(i).is_alive
+        )
+        if active and QMessageBox.question(
+            self, "退出",
+            f"仍有 {active} 个会话在连接中,确定退出?"
+        ) != QMessageBox.Yes:
+            event.ignore()
+            return
         for i in range(self.tabs.count()):
             w = self.tabs.widget(i)
             if isinstance(w, TerminalTab):
