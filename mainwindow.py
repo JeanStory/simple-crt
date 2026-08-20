@@ -20,6 +20,7 @@ class _DataBridge(QObject):
     closed = Signal(str)
     connected = Signal(str)         # 连接成功 (会话名)
     connect_failed = Signal(str)    # 连接失败 (错误信息)
+    host_key_prompt = Signal(object)  # 主机密钥确认 (在 UI 线程弹窗, 携带 holder)
 
 
 class TerminalTab(QWidget):
@@ -42,12 +43,14 @@ class TerminalTab(QWidget):
         self.bridge.closed.connect(self._on_closed)
         self.bridge.connected.connect(self._on_connected)
         self.bridge.connect_failed.connect(self._on_connect_failed)
+        self.bridge.host_key_prompt.connect(self._on_host_key_prompt)
 
     def connect_backend(self) -> None:
         import threading
         s = self.session
         if s.kind == "ssh":
             conn = SSHConnection(s.host, s.port, s.username, s.password, s.key_path)
+            conn.host_key_verifier = self._verify_host_key
         elif s.kind == "serial":
             conn = SerialConnection(s.serial_port, s.baudrate)
         else:
@@ -74,6 +77,47 @@ class TerminalTab(QWidget):
 
     def _on_connect_failed(self, err: str) -> None:
         self.term.feed(("\x1b[31m*** 连接失败: %s ***\x1b[0m\r\n" % err).encode())
+
+    def _verify_host_key(self, host: str, keytype: str, fp: str, changed: bool) -> bool:
+        """后台线程调用: 发信号让 UI 线程弹窗, 阻塞等用户结果。"""
+        import threading
+        holder = {"host": host, "keytype": keytype, "fp": fp,
+                  "changed": changed, "accepted": False,
+                  "event": threading.Event()}
+        self.bridge.host_key_prompt.emit(holder)
+        holder["event"].wait()
+        return bool(holder["accepted"])
+
+    def _on_host_key_prompt(self, holder) -> None:
+        """UI 线程: 显示主机密钥指纹, 由用户决定是否信任。"""
+        try:
+            if holder["changed"]:
+                title = "⚠ 主机密钥已变更"
+                text = (
+                    f"主机 {holder['host']} 的密钥与记录不符!\n\n"
+                    f"密钥类型: {holder['keytype']}\n"
+                    f"指纹: {holder['fp']}\n\n"
+                    "这可能是中间人攻击, 也可能是服务器重装/换机。\n"
+                    "只有在你确认服务器确实更换了密钥时才应接受。\n\n"
+                    "接受并连接?"
+                )
+                default = QMessageBox.No
+            else:
+                title = "首次连接: 确认主机密钥"
+                text = (
+                    f"无法确认主机 {holder['host']} 的真实性。\n\n"
+                    f"密钥类型: {holder['keytype']}\n"
+                    f"指纹: {holder['fp']}\n\n"
+                    "请通过可信渠道核对指纹后再接受。\n\n"
+                    "信任该主机并继续连接?"
+                )
+                default = QMessageBox.No
+            ans = QMessageBox.question(
+                self, title, text,
+                QMessageBox.Yes | QMessageBox.No, default)
+            holder["accepted"] = (ans == QMessageBox.Yes)
+        finally:
+            holder["event"].set()
 
     def _on_send(self, data: bytes) -> None:
         if self.connection and self.connection.alive:

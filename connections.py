@@ -9,9 +9,24 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
 import threading
 import time
 from typing import Callable, Optional
+
+
+def _ssh_fingerprint(key) -> str:
+    """返回 OpenSSH 风格的 SHA256 指纹 (SHA256:<base64>, 无 padding)。"""
+    digest = hashlib.sha256(key.asbytes()).digest()
+    b64 = base64.b64encode(digest).decode("ascii").rstrip("=")
+    return "SHA256:" + b64
+
+
+def _app_known_hosts_path() -> str:
+    """应用自有的 known_hosts 文件 (~/.simple_crt/known_hosts)。"""
+    return os.path.join(os.path.expanduser("~"), ".simple_crt", "known_hosts")
 
 
 class Connection:
@@ -73,12 +88,56 @@ class SSHConnection(Connection):
         self.term = term
         self._client = None
         self._chan = None
+        # 主机密钥校验回调: (host, keytype, fingerprint, changed) -> bool
+        # 返回 True 表示用户信任并接受该密钥。为 None 时安全默认=拒绝未知密钥。
+        self.host_key_verifier: Optional[Callable[[str, str, str, bool], bool]] = None
+
+    def _persist_host_key(self, client, hostname, key) -> None:
+        """把已被用户接受的主机密钥写入应用自有的 known_hosts。"""
+        kh_path = _app_known_hosts_path()
+        try:
+            os.makedirs(os.path.dirname(kh_path), exist_ok=True)
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            client.save_host_keys(kh_path)
+        except Exception:
+            pass  # 写盘失败不影响本次连接, 只是下次仍会再问
 
     def start(self, cols: int, rows: int) -> None:
         import paramiko
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # 加载已知主机: 系统 ~/.ssh/known_hosts (只读) + 应用自有 (可写)
+        try:
+            client.load_system_host_keys()
+        except Exception:
+            pass
+        kh_path = _app_known_hosts_path()
+        if os.path.exists(kh_path):
+            try:
+                client.load_host_keys(kh_path)
+            except Exception:
+                pass
+
+        conn = self
+
+        class _InteractivePolicy(paramiko.MissingHostKeyPolicy):
+            """未知主机 -> 询问用户 (TOFU)。拒绝则中止连接。"""
+            def missing_host_key(self, cli, hostname, key):
+                fp = _ssh_fingerprint(key)
+                accept = False
+                if conn.host_key_verifier is not None:
+                    try:
+                        accept = bool(conn.host_key_verifier(
+                            hostname, key.get_name(), fp, False))
+                    except Exception:
+                        accept = False
+                if not accept:
+                    raise paramiko.SSHException(
+                        f"用户拒绝了主机 {hostname} 的密钥 (指纹 {fp})")
+                conn._persist_host_key(cli, hostname, key)
+
+        client.set_missing_host_key_policy(_InteractivePolicy())
+
         connect_kwargs = dict(
             hostname=self.host,
             port=self.port,
@@ -93,7 +152,30 @@ class SSHConnection(Connection):
             connect_kwargs["password"] = self.password
             connect_kwargs["look_for_keys"] = False
 
-        client.connect(**connect_kwargs)
+        try:
+            client.connect(**connect_kwargs)
+        except paramiko.BadHostKeyException as e:
+            # 已知主机但密钥变了 —— 可能是 MITM, 强告警后由用户定夺
+            fp = _ssh_fingerprint(e.key)
+            accept = False
+            if self.host_key_verifier is not None:
+                try:
+                    accept = bool(self.host_key_verifier(
+                        e.hostname, e.key.get_name(), fp, True))
+                except Exception:
+                    accept = False
+            if not accept:
+                raise
+            # 用户明确接受变更: 覆盖旧密钥后重连
+            try:
+                hk = client.get_host_keys()
+                if e.hostname in hk:
+                    del hk[e.hostname]
+            except Exception:
+                pass
+            self._persist_host_key(client, e.hostname, e.key)
+            client.connect(**connect_kwargs)
+
         chan = client.invoke_shell(term=self.term, width=cols, height=rows)
         chan.settimeout(0.0)  # 非阻塞
         self._client = client
