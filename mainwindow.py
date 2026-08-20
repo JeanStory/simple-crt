@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QObject, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QTabWidget,
                                QDockWidget, QTreeWidget, QTreeWidgetItem, QMenu,
                                QMessageBox, QToolBar,
@@ -159,7 +159,20 @@ class MainWindow(QMainWindow):
         self._build_session_dock()
         self._build_toolbar()
         self._build_menu()
+        self._setup_tab_shortcuts()
         self.statusBar().showMessage("就绪")
+
+    def _setup_tab_shortcuts(self) -> None:
+        """Alt+1~8 切换到对应序号标签页, Alt+9 跳到最后一个标签页。"""
+        for n in range(1, 9):
+            sc = QShortcut(QKeySequence(f"Alt+{n}"), self)
+            sc.activated.connect(lambda i=n - 1: self._switch_to_tab(i))
+        sc_last = QShortcut(QKeySequence("Alt+9"), self)
+        sc_last.activated.connect(lambda: self._switch_to_tab(self.tabs.count() - 1))
+
+    def _switch_to_tab(self, index: int) -> None:
+        if 0 <= index < self.tabs.count():
+            self.tabs.setCurrentIndex(index)
 
     def _center_on_primary_screen(self) -> None:
         """确保窗口以正常状态显示并居中到主屏, 防止继承屏幕外/最小化状态导致看不到界面。"""

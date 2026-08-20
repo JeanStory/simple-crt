@@ -458,6 +458,10 @@ class TerminalWidget(QAbstractScrollArea):
         # 导致 screen/tmux/vim 等程序的控制键失效。这里对所有按键 accept 该事件,
         # 强制 Qt 把它作为普通 KeyPress 派发给终端。
         if et == QEvent.ShortcutOverride:
+            # Alt+数字 保留给应用级标签切换快捷键(QShortcut), 不在此抢下。
+            # 其余组合(Ctrl+B/D/W 等)仍强制交终端, 保证 screen/tmux/vim 可用。
+            if (event.modifiers() & Qt.AltModifier) and Qt.Key_0 <= event.key() <= Qt.Key_9:
+                return super().event(event)
             event.accept()
             return True
         # Qt 默认把 Tab/Backtab 当作焦点切换在 keyPressEvent 之前拦截,
