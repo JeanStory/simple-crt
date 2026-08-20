@@ -449,10 +449,20 @@ class TerminalWidget(QAbstractScrollArea):
 
     # ---------- 键盘输入 ----------
     def event(self, event) -> bool:
-        # Qt 默认会把 Tab/Backtab 当作焦点切换在 keyPressEvent 之前拦截,
-        # 导致终端收不到 Tab(焦点跳走 => 看起来卡住)。这里拦下交给 keyPressEvent。
         from PySide6.QtCore import QEvent
-        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+        et = event.type()
+        # 终端必须独占键盘输入。Qt 在 KeyPress 之前会先发 ShortcutOverride 事件,
+        # 询问是否让某个按键组合走应用级快捷键(菜单 QAction / 全局 QShortcut)。
+        # 若不在此阶段抢下, 像 Ctrl+B(screen)、Ctrl+D、Ctrl+W 这类组合就可能被
+        # 父级 QMainWindow 的快捷键系统吞掉, KeyPress 永远到不了 keyPressEvent,
+        # 导致 screen/tmux/vim 等程序的控制键失效。这里对所有按键 accept 该事件,
+        # 强制 Qt 把它作为普通 KeyPress 派发给终端。
+        if et == QEvent.ShortcutOverride:
+            event.accept()
+            return True
+        # Qt 默认把 Tab/Backtab 当作焦点切换在 keyPressEvent 之前拦截,
+        # 导致终端收不到 Tab(焦点跳走 => 看起来卡住)。这里拦下交给 keyPressEvent。
+        if et == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
             self.keyPressEvent(event)
             return True
         return super().event(event)
