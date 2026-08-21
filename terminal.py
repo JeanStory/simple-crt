@@ -85,6 +85,9 @@ class TerminalWidget(QAbstractScrollArea):
 
         self._font = QFont(font_family, font_size)
         self._font.setStyleHint(QFont.Monospace)
+        # 强制优先轮廓字体, 避免 DirectWrite 回退到 Fixedsys/MS Sans Serif 等
+        # 老式位图字体导致 CreateFontFaceFromHDC 失败刷屏警告。
+        self._font.setStyleStrategy(QFont.PreferOutline)
         self._fm = QFontMetricsF(self._font)
         self._char_w = self._fm.horizontalAdvance("W")
         self._char_h = self._fm.height()
@@ -561,6 +564,7 @@ class TerminalWidget(QAbstractScrollArea):
     def set_font(self, family: str, size: int) -> None:
         self._font = QFont(family, size)
         self._font.setStyleHint(QFont.Monospace)
+        self._font.setStyleStrategy(QFont.PreferOutline)
         self._fm = QFontMetricsF(self._font)
         self._char_w = self._fm.horizontalAdvance("W")
         self._char_h = self._fm.height()
