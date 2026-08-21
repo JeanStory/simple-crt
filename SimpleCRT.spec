@@ -1,12 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
+# connections.py 里 paramiko/serial/winpty 都是函数内延迟 import,
+# PyInstaller 静态分析扫不到, 必须显式 collect_all 把二进制/数据/子模块全收进来。
+# paramiko 还依赖 bcrypt / pynacl 的 C 扩展。
+_extra_bins, _extra_datas, _extra_hidden = [], [], []
+for _pkg in ('paramiko', 'bcrypt', 'nacl', 'serial', 'winpty'):
+    try:
+        _b, _d, _h = collect_all(_pkg)
+        _extra_bins += _b
+        _extra_datas += _d
+        _extra_hidden += _h
+    except Exception:
+        pass  # 该环境未装(如winpty可能缺)则跳过, 不阻断构建
+
 
 a = Analysis(
     ['run.py'],
     pathex=[],
-    binaries=[],
-    datas=[('app.py', 'app_src'), ('connections.py', 'app_src'), ('crypto.py', 'app_src'), ('dialogs.py', 'app_src'), ('mainwindow.py', 'app_src'), ('sessions.py', 'app_src'), ('terminal.py', 'app_src'), ('__init__.py', 'app_src')],
-    hiddenimports=['pyte', 'cryptography',
+    binaries=_extra_bins,
+    datas=[('app.py', 'app_src'), ('connections.py', 'app_src'), ('crypto.py', 'app_src'), ('dialogs.py', 'app_src'), ('mainwindow.py', 'app_src'), ('sessions.py', 'app_src'), ('terminal.py', 'app_src'), ('__init__.py', 'app_src')] + _extra_datas,
+    hiddenimports=_extra_hidden + ['pyte', 'cryptography',
         'cryptography.hazmat.backends',
         'cryptography.hazmat.backends.openssl',
         'cryptography.hazmat.bindings',
