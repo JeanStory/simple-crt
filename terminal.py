@@ -126,6 +126,32 @@ class TerminalWidget(QAbstractScrollArea):
 
     # ---------- 数据流 ----------
     def feed(self, data: bytes) -> None:
+        # 排查用: 设环境变量 SCRT_TRACE=<日志文件路径> 后, 每段收到的原始字节
+        # (含收前/收后光标位置)会以 repr 形式追加写入该文件。平时不设则零开销。
+        import os as _os
+        _trace = _os.environ.get("SCRT_TRACE")
+        if _trace:
+            try:
+                _before = (self.screen.cursor.y, self.screen.cursor.x)
+            except Exception:
+                _before = None
+            try:
+                self.stream.feed(data)
+            except Exception:
+                pass
+            try:
+                _after = (self.screen.cursor.y, self.screen.cursor.x)
+                _lnm = getattr(self.screen, "mode", None)
+                with open(_trace, "a", encoding="utf-8") as _f:
+                    _f.write("RAW=%r  cursor %s->%s  mode=%r\n"
+                             % (data, _before, _after, _lnm))
+            except Exception:
+                pass
+            self._scroll_offset = 0
+            self._clear_selection()
+            self._update_scrollbar()
+            self.viewport().update()
+            return
         try:
             self.stream.feed(data)
         except Exception:

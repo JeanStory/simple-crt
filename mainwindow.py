@@ -12,6 +12,7 @@ from .sessions import SessionStore, Session
 from .dialogs import SessionDialog
 from .terminal import TerminalWidget
 from .connections import SSHConnection, SerialConnection, LocalConnection
+from .zmodem_ui import ZmodemController
 
 
 class _DataBridge(QObject):
@@ -36,6 +37,7 @@ class TerminalTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.term = TerminalWidget()
         layout.addWidget(self.term)
+        self.zmodem = ZmodemController(self)
 
         self.term.send_data.connect(self._on_send)
         self.term.resized.connect(self._on_resize)
@@ -128,7 +130,9 @@ class TerminalTab(QWidget):
             self.connection.resize(cols, rows)
 
     def _on_data(self, data: bytes) -> None:
-        self.term.feed(data)
+        # 先经 ZMODEM 拦截器: 命中 rz/sz 启动序列则导流给传输会话,
+        # 否则(非传输态)字节照常送终端渲染。
+        self.zmodem.feed(data)
 
     def _on_closed(self, reason: str) -> None:
         self.term.feed(("\r\n\x1b[33m*** 连接已断开: %s ***\x1b[0m\r\n" % reason).encode())
