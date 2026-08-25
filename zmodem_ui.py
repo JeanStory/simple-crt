@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtWidgets import QFileDialog, QProgressDialog, QMessageBox
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from .zmodem import (
     ZModemReceiver, ZModemSender, detect_zmodem, cancel_sequence, ZDLE, ZPAD)
@@ -34,9 +34,21 @@ class ZmodemController:
         self._progress = None
         self._save_dir = None
         self._cancelled = False
+        # 模态文件/目录选择框打开期间的重入守卫: 弹框时 session 仍为 None,
+        # 远端 rz/sz 未收到响应会超时重发 ZRQINIT 头, 经 _DataBridge 信号再次
+        # 进入 feed() -> 再次探测到启动序列 -> 弹出第二个框。置位期间直接丢弃
+        # 这些重发的协议字节(它们不是终端输出, 且会话启动后 sender/receiver
+        # 会驱动协议前进, 丢弃重发头无副作用)。
+        self._prompting = False
+        # 主动上传(拖拽触发)时暂存待发文件: 发出 rz\r 后, 远端回传的 ZRQINIT
+        # 被 feed() 探测到进入 _start_upload, 此时直接用这批文件而不再弹框。
+        self._pending_upload = None
 
     # ---- 对外: 远端字节入口 ----
     def feed(self, data: bytes) -> None:
+        # 模态选择框打开期间: 丢弃远端重发的协议字节, 防重入再弹框(见 __init__)。
+        if self._prompting:
+            return
         # 传输态: 全部导流给会话
         if self.session is not None:
             try:
@@ -119,8 +131,12 @@ class ZmodemController:
 
     # ---- 下载(服务器 sz -> 本地接收) ----
     def _start_download(self, rest: bytes) -> None:
-        save_dir = QFileDialog.getExistingDirectory(
-            self.tab, "选择接收文件的保存目录", os.path.expanduser("~"))
+        self._prompting = True
+        try:
+            save_dir = QFileDialog.getExistingDirectory(
+                self.tab, "选择接收文件的保存目录", os.path.expanduser("~"))
+        finally:
+            self._prompting = False
         if not save_dir:
             # 用户取消: 发 ZMODEM 取消序列(8xCAN+8x退格)中止远端 sz 进程,
             # 否则远端持续重发 ZRQINIT 头, 每次都再触发目录选择框(死循环)。
@@ -170,13 +186,24 @@ class ZmodemController:
 
     # ---- 上传(服务器 rz -> 本地发送) ----
     def _start_upload(self, rest: bytes) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self.tab, "选择要上传的文件", os.path.expanduser("~"))
-        if not paths:
-            # 用户取消: 发取消序列中止远端 rz 进程, 不透传协议头。
-            self._cancel_remote()
-            self._term("\r\n\x1b[33m*** 已取消上传 ***\x1b[0m\r\n".encode())
-            return
+        pending = self._pending_upload
+        if pending is not None:
+            # 主动上传(拖拽触发): 已有待发文件, 不再弹框。
+            self._pending_upload = None
+            paths = pending
+        else:
+            # 被动上传(远端 rz 启动头): 弹框选文件, 期间置 _prompting 防重入。
+            self._prompting = True
+            try:
+                paths, _ = QFileDialog.getOpenFileNames(
+                    self.tab, "选择要上传的文件", os.path.expanduser("~"))
+            finally:
+                self._prompting = False
+            if not paths:
+                # 用户取消: 发取消序列中止远端 rz 进程, 不透传协议头。
+                self._cancel_remote()
+                self._term("\r\n\x1b[33m*** 已取消上传 ***\x1b[0m\r\n".encode())
+                return
         self._cancelled = False
 
         def _make_opener(p):
@@ -212,6 +239,27 @@ class ZmodemController:
             sender.feed(rest)
         if getattr(sender, "finished", False):
             self._end_session()
+
+    # ---- 对外: 主动上传(拖拽文件到终端触发) ----
+    def start_upload_files(self, paths) -> bool:
+        """用户拖拽文件到终端: 主动向远端发 ``rz\\r`` 启动接收进程, 暂存待发文件。
+        远端回传的 ZRQINIT 头被 feed() 探测到进入 _start_upload, 届时直接取
+        _pending_upload 这批文件而不再弹选择框。
+
+        返回 False 表示当前状态不允许发起(已有传输在进行/正在弹框), 由调用方决定
+        是否提示用户。"""
+        # 传输态或弹框态: 拒绝新的主动上传, 防协议交叠。
+        if self.session is not None or self._prompting or self._pending_upload is not None:
+            return False
+        # 过滤出真实存在的本地文件(拖拽可能带入目录或失效路径)。
+        files = [p for p in (paths or []) if p and os.path.isfile(p)]
+        if not files:
+            return False
+        self._pending_upload = files
+        self._term(("\r\n\x1b[36m*** 准备上传 %d 个文件, 正在启动远端接收... ***\x1b[0m\r\n" % len(files)).encode())
+        # 发 rz 命令启动远端接收进程; 远端回传 ZRQINIT 后由 feed() 驱动上传。
+        self._write(b"rz\r")
+        return True
 
     def _on_send_file_done(self, name: str, path: str) -> None:
         self._term(("\r\n\x1b[32m*** 已上传: %s ***\x1b[0m\r\n" % os.path.basename(path)).encode())

@@ -39,6 +39,9 @@ class TerminalTab(QWidget):
         layout.addWidget(self.term)
         self.zmodem = ZmodemController(self)
 
+        # 拖拽上传: 子控件 term 默认不接受拖放, Qt 会把拖放事件冒泡到本 widget。
+        self.setAcceptDrops(True)
+
         self.term.send_data.connect(self._on_send)
         self.term.resized.connect(self._on_resize)
         self.bridge.data_ready.connect(self._on_data)
@@ -133,6 +136,34 @@ class TerminalTab(QWidget):
         # 先经 ZMODEM 拦截器: 命中 rz/sz 启动序列则导流给传输会话,
         # 否则(非传输态)字节照常送终端渲染。
         self.zmodem.feed(data)
+
+    def dragEnterEvent(self, event) -> None:
+        # 仅在连接存活且拖入的是本地文件时接受, 否则交回默认处理。
+        md = event.mimeData()
+        if md is not None and md.hasUrls() and self.is_alive:
+            if any(u.isLocalFile() for u in md.urls()):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:
+        md = event.mimeData()
+        if md is None or not md.hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+        paths = [p for p in paths if p]
+        if not paths:
+            event.ignore()
+            return
+        if not self.is_alive:
+            self.term.feed("\r\n\x1b[31m*** 未连接, 无法上传 ***\x1b[0m\r\n".encode())
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        # 交给 ZMODEM 控制器: 主动发 rz 启动远端接收, 暂存这批文件待发。
+        if not self.zmodem.start_upload_files(paths):
+            self.term.feed("\r\n\x1b[33m*** 当前有传输正在进行, 请稍后重试 ***\x1b[0m\r\n".encode())
 
     def _on_closed(self, reason: str) -> None:
         self.term.feed(("\r\n\x1b[33m*** 连接已断开: %s ***\x1b[0m\r\n" % reason).encode())
