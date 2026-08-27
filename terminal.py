@@ -4,7 +4,7 @@ from __future__ import annotations
 import unicodedata
 
 import pyte
-from PySide6.QtCore import Qt, QTimer, Signal, QRect
+from PySide6.QtCore import Qt, QTimer, Signal, QRect, QPoint
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QKeyEvent,
                            QGuiApplication, QAction)
 from PySide6.QtWidgets import QWidget, QAbstractScrollArea, QMenu
@@ -82,6 +82,10 @@ class TerminalWidget(QAbstractScrollArea):
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().setAttribute(Qt.WA_OpaquePaintEvent, True)
+        # 启用输入法(IME): 允许在终端内切换中文输入法。Qt 默认对自绘控件不派发
+        # 输入法事件, 须显式打开 WA_InputMethodEnabled, 否则拼音候选框不弹、
+        # 提交的中文字符收不到。配合 inputMethodEvent/inputMethodQuery 使用。
+        self.setAttribute(Qt.WA_InputMethodEnabled, True)
 
         self._font = QFont(font_family, font_size)
         self._font.setStyleHint(QFont.Monospace)
@@ -528,6 +532,35 @@ class TerminalWidget(QAbstractScrollArea):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    # ---------- 输入法 (IME) ----------
+    def inputMethodEvent(self, event) -> None:
+        """接收输入法提交的文本(如中文候选词确认)。
+
+        拼音编辑过程走 IME 自己的候选悬浮窗显示(见 inputMethodQuery 提供的
+        光标矩形), 这里只在候选词最终提交时把 commitString 编码后发往终端。
+        preedit(预编辑串)不写入 pyte 缓冲, 由 IME 浮窗呈现。
+        """
+        commit = event.commitString()
+        if commit:
+            self._scroll_offset = 0
+            self.send_data.emit(commit.encode("utf-8"))
+        event.accept()
+
+    def inputMethodQuery(self, query):
+        """告诉输入法候选框应出现的位置(跟随终端光标)。"""
+        if query == Qt.ImCursorRectangle:
+            cx = self.screen.cursor.x
+            cy = self.screen.cursor.y
+            x = cx * self._char_w
+            y = cy * self._char_h
+            # 光标坐标基于 viewport, 需映射回控件本体坐标系(加 viewport 偏移)
+            off = self.viewport().mapTo(self, QPoint(0, 0))
+            return QRect(int(x) + off.x(), int(y) + off.y(),
+                         max(2, int(self._char_w)), int(self._char_h))
+        if query == Qt.ImEnabled:
+            return True
+        return super().inputMethodQuery(query)
 
     def _map_key(self, key, mod, text) -> bytes | None:
         ctrl = mod & Qt.ControlModifier
