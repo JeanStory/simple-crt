@@ -20,7 +20,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=_extra_bins,
-    datas=[('app.py', 'app_src'), ('connections.py', 'app_src'), ('crypto.py', 'app_src'), ('dialogs.py', 'app_src'), ('mainwindow.py', 'app_src'), ('sessions.py', 'app_src'), ('terminal.py', 'app_src'), ('__init__.py', 'app_src')] + _extra_datas,
+    datas=[('app.py', 'app_src'), ('connections.py', 'app_src'), ('crypto.py', 'app_src'), ('dialogs.py', 'app_src'), ('mainwindow.py', 'app_src'), ('sessions.py', 'app_src'), ('terminal.py', 'app_src'), ('zmodem.py', 'app_src'), ('zmodem_ui.py', 'app_src'), ('__init__.py', 'app_src')] + _extra_datas,
     hiddenimports=_extra_hidden + ['pyte', 'cryptography',
         'cryptography.hazmat.backends',
         'cryptography.hazmat.backends.openssl',
