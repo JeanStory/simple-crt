@@ -108,6 +108,7 @@ class TerminalWidget(QAbstractScrollArea):
         self._sel_anchor = None   # (abs_line, col) 起点
         self._sel_end = None      # (abs_line, col) 终点
         self._selecting = False
+        self._sel_block = False   # 矩形块选模式 (Alt+拖拽): 只选列范围, 非整行
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._toggle_blink)
         self._blink_timer.start(500)
@@ -326,8 +327,12 @@ class TerminalWidget(QAbstractScrollArea):
         (sl, sc), (el, ec) = sel
         if abs_line < sl or abs_line > el:
             return None
-        s_col = sc if abs_line == sl else 0
-        e_col = ec if abs_line == el else self.cols
+        if self._sel_block:
+            # 矩形块选: 每行都用相同的列区间 (两端点列的 min/max)
+            s_col, e_col = min(sc, ec), max(sc, ec)
+        else:
+            s_col = sc if abs_line == sl else 0
+            e_col = ec if abs_line == el else self.cols
         if e_col < s_col:
             return None
         return (s_col, e_col)
@@ -361,14 +366,19 @@ class TerminalWidget(QAbstractScrollArea):
         if sel is None:
             return ""
         (sl, sc), (el, ec) = sel
+        block = self._sel_block
+        b_s, b_e = min(sc, ec), max(sc, ec)   # 块选时每行统一的列区间
         parts = []
         for abs_line in range(sl, el + 1):
             line = self._line_at_abs(abs_line)
             if line is None:
                 parts.append("")
                 continue
-            s_col = sc if abs_line == sl else 0
-            e_col = ec if abs_line == el else self.cols
+            if block:
+                s_col, e_col = b_s, b_e
+            else:
+                s_col = sc if abs_line == sl else 0
+                e_col = ec if abs_line == el else self.cols
             chars = [(line[c].data or " ") for c in range(s_col, min(e_col, self.cols))]
             parts.append("".join(chars).rstrip())
         return "\n".join(parts)
@@ -376,6 +386,8 @@ class TerminalWidget(QAbstractScrollArea):
     # ---------- 鼠标 (选择/粘贴) ----------
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
+            # 按住 Alt 拖拽 => 矩形块选 (只取列范围), 否则整行连续选
+            self._sel_block = bool(event.modifiers() & Qt.AltModifier)
             self._sel_anchor = self._pixel_to_cell(event.position().toPoint())
             self._sel_end = self._sel_anchor
             self._selecting = True
@@ -413,6 +425,7 @@ class TerminalWidget(QAbstractScrollArea):
     def mouseDoubleClickEvent(self, event) -> None:
         # 双击选中光标下的单词
         if event.button() == Qt.LeftButton:
+            self._sel_block = False   # 双击选词恒为整行语义, 清除可能残留的块选标志
             abs_line, col = self._pixel_to_cell(event.position().toPoint())
             line = self._line_at_abs(abs_line)
             if line is not None:
